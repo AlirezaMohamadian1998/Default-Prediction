@@ -6,6 +6,7 @@ __pycache__/
 .ipynb_checkpoints/
 *.egg-info/
 learning/
+tests/test_constants.py
 
 train.parquet
 train_labels.csv
