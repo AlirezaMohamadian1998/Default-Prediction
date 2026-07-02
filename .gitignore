@@ -1,0 +1,11 @@
+.venv/
+artifacts/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+learning/
+
+train.parquet
+train_labels.csv
