@@ -68,3 +68,22 @@ def build_lag_categorical_expressions(categorical_columns):
     for col in categorical_columns:
         expressions.append(f"LAG({col}) OVER (PARTITION BY {constants.CUSTOMER_ID} ORDER BY {constants.DATE_COLUMN}) AS previous_{col}")
     return expressions
+
+def build_history_sequence_expression() -> str:
+    return f"""CAST(
+        DATEDIFF(
+            'day',
+            LAG({constants.DATE_COLUMN}) OVER (PARTITION BY {constants.CUSTOMER_ID} ORDER BY {constants.DATE_COLUMN}),
+            {constants.DATE_COLUMN}
+        ) AS SMALLINT
+    ) AS gap_days
+    """
+
+def build_customer_history_aggregate_expressions() -> list[str]:
+    return [
+        f"CAST(DATEDIFF('day', MIN({constants.DATE_COLUMN}), MAX({constants.DATE_COLUMN})) AS SMALLINT) AS history_span_days",
+        f"CAST(AVG(gap_days) AS FLOAT) AS mean_gap_days",
+        f"CAST(STDDEV_SAMP(gap_days) AS FLOAT) AS std_gap_days",
+        f"CAST(MAX(gap_days) AS SMALLINT) AS max_gap_days",
+        f"CAST(MIN(gap_days) AS SMALLINT) AS min_gap_days"
+    ]
