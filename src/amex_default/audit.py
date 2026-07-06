@@ -49,7 +49,15 @@ def audit_dataset(train_path: str, labels_path: str):
             [labels_path]
         ).fetchall()  # type: ignore
 
-        positive_rate = label_counts[1][1] / (label_counts[0][1] + label_counts[1][1])
+        label_count_by_target = dict(label_counts)
+        actual_targets = set(label_count_by_target)
+        if actual_targets != {0, 1}:
+            raise ValueError(
+                f"Expected binary targets {{0, 1}}, found {actual_targets}"
+            )
+
+        total_labels = sum(label_count_by_target.values())
+        positive_rate = label_count_by_target[1] / total_labels
     finally:
         connection.close()
     
