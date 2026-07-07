@@ -2,6 +2,7 @@ from amex_default import features
 from amex_default.database import connect
 from amex_default.audit import audit_dataset
 from pathlib import Path
+import argparse
 
 def _build_numerical_query(numerical_columns, clean_expression):
     all_numeric_aggregate_expressions = features.build_all_numeric_expressions(numerical_columns)
@@ -139,4 +140,33 @@ def _validate_intermediate_features(connection, numerical_output_path, categoric
     if(count_numeric_customer[0] == count_numeric_customer[1] == count_categorical_customer[0] == count_categorical_customer[1] == expected_customer_count):
         return
     else:
-        raise ValueError("There are duplicates or less rows")
+        raise ValueError("Intermediate feature files contain duplicate or missing customers")    
+    
+def argument_parser():
+    parser = argparse.ArgumentParser(description="Prepare one-row-per-customer AMEX features from monthly statements.")
+    parser.add_argument("--input", type=str, required=True, help="Path to the raw monthly statement parquet file")
+    parser.add_argument("--labels", type=str, required=True, help="Path to the training labels CSV file")
+    parser.add_argument("--output", type=str, required=True, help="Path where the final prepared feature parquet will be written")
+    parser.add_argument("--working-directory", type=str, required=False, default="artifacts/intermediate", help="Directory for intermediate numeric and categorical parquet files")
+    parser.add_argument("--temp-directory", type=str, required=False, default="artifacts/duckdb_tmp", help="Directory DuckDB can use for temporary spill files")
+    parser.add_argument("--threads", type=int, required=False, default=None, help="Number of DuckDB worker threads to use")
+
+    return parser
+
+def main():
+    parser = argument_parser()
+    args = parser.parse_args()
+
+    output_path = prepare_features(
+        train_path=args.input,
+        labels_path=args.labels,
+        final_output_path_str=args.output,
+        working_directory_str=args.working_directory,
+        temp_directory=args.temp_directory,
+        threads=args.threads,
+    )
+
+    print(f"Prepared features written to: {output_path}")
+
+if __name__ == "__main__":
+    main()
