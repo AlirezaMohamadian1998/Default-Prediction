@@ -27,4 +27,5 @@ CATEGORICAL_COLUMNS: Final[tuple[str, ...]] = (
 DEFAULT_SEED: Final[int] = 42
 DEFAULT_MEMORY_LIMIT: Final[str] = "8GB"
 DEFAULT_THREADS: Final[int] = max(1, (os.cpu_count() or 1) - 2)
+DEFAULT_CHUNK_SIZE = 20
 
