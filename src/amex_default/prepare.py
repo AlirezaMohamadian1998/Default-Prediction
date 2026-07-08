@@ -3,7 +3,6 @@ from amex_default.database import connect
 from amex_default.audit import audit_dataset
 from amex_default import constants
 from pathlib import Path
-from math import ceil
 import argparse
 
 def _build_numerical_query(numerical_columns, clean_expression):
@@ -72,12 +71,12 @@ def _copy_query_to_parquet(connection, query, parameters):
 
 def chunk_helper(columns:list, chunk_size:int) -> list[list]:
     copy_column = columns.copy()
-    chunck_columns = []
+    chunk_columns = []
 
     while copy_column:
-        chunck_columns.append(copy_column[:chunk_size])
+        chunk_columns.append(copy_column[:chunk_size])
         del copy_column[:chunk_size]
-    return chunck_columns
+    return chunk_columns
 
 def _validate_intermediate_features(connection, numerical_output_paths, categorical_output_path, expected_customer_count):
 
@@ -119,7 +118,9 @@ def argument_parser():
     parser.add_argument("--output", type=str, required=True, help="Path where the final prepared feature parquet will be written")
     parser.add_argument("--working-directory", type=str, required=False, default="artifacts/intermediate", help="Directory for intermediate numeric and categorical parquet files")
     parser.add_argument("--temp-directory", type=str, required=False, default="artifacts/duckdb_tmp", help="Directory DuckDB can use for temporary spill files")
-    parser.add_argument("--threads", type=int, required=False, default=None, help="Number of DuckDB worker threads to use")
+    parser.add_argument("--threads", type=int, required=False, default=constants.DEFAULT_THREADS, help="Number of DuckDB worker threads to use")
+    parser.add_argument("--memory-limit", type=str, required=False, default=constants.DEFAULT_MEMORY_LIMIT, help="DuckDB memory limit, for example 8GB, 10GB, or 12GB")
+    parser.add_argument("--chunk-size", type=int, required=False, default=constants.DEFAULT_CHUNK_SIZE, help="Number of numeric raw columns to aggregate per intermediate chunk")
     return parser
 
 def prepare_features(
@@ -128,7 +129,9 @@ def prepare_features(
         final_output_path_str: str,
         working_directory_str: str, 
         temp_directory, 
-        threads
+        threads=constants.DEFAULT_THREADS,
+        memory_limit = constants.DEFAULT_MEMORY_LIMIT,
+        chunk_size = constants.DEFAULT_CHUNK_SIZE
     ):
     working_directory = Path(working_directory_str)
     working_directory.mkdir(parents=True, exist_ok=True)
@@ -138,32 +141,34 @@ def prepare_features(
     sentinel_counts = audit_result['sentinel_counts']
     numerical_columns, categorical_columns = features.classify_feature_columns(schema)
 
-    chunks_num = ceil(len(numerical_columns) / constants.DEFAULT_CHUNK_SIZE)
-    numerical_chunk_columns = chunk_helper(numerical_columns,constants.DEFAULT_CHUNK_SIZE)
+    numerical_chunk_columns = chunk_helper(numerical_columns,chunk_size)
+    chunks_num = len(numerical_chunk_columns)
 
     clean_expression = ",\n".join(features.build_clean_source_expressions(schema, sentinel_counts))
     categorical_history_query = _build_categorical_history_query(categorical_columns, clean_expression)
 
-    connection = connect(temp_directory= temp_directory, threads= threads, memory_limit="12GB")
+    connection = connect(temp_directory= temp_directory, threads= threads, memory_limit=memory_limit)
     try:
         parameters = {"train_path": str(train_path)}
 
         numerical_output_paths = [
             f"{working_directory_str}/numeric_features_{i}.parquet" for i in range(chunks_num)
         ]
-        categorical_output_path = f"{working_directory_str}/categorical_history_features.parquet"
-        
         for i in range(chunks_num):
+            if(not (Path(numerical_output_paths[i]).exists())):
+                _copy_query_to_parquet(
+                    connection,
+                    _build_numerical_query(numerical_chunk_columns[i], clean_expression),
+                    {**parameters, "output_path": numerical_output_paths[i]}
+                )
+        
+        categorical_output_path = f"{working_directory_str}/categorical_history_features.parquet"
+        if(not Path(categorical_output_path).exists()):
             _copy_query_to_parquet(
-                connection,
-                _build_numerical_query(numerical_chunk_columns[i], clean_expression),
-                {**parameters, "output_path": numerical_output_paths[i]}
+                connection, 
+                categorical_history_query, 
+                {**parameters, "output_path": categorical_output_path}
             )
-        _copy_query_to_parquet(
-            connection, 
-            categorical_history_query, 
-            {**parameters, "output_path": categorical_output_path}
-        )
 
         _validate_intermediate_features(connection, numerical_output_paths, categorical_output_path, audit_result["customer_count"])
 
@@ -192,6 +197,8 @@ def main():
         working_directory_str=args.working_directory,
         temp_directory=args.temp_directory,
         threads=args.threads,
+        memory_limit=args.memory_limit,
+        chunk_size=args.chunk_size
     )
 
     print(f"Prepared features written to: {output_path}")
