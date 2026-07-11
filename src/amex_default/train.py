@@ -26,6 +26,9 @@ def train_model(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    if folds < 2:
+        raise ValueError("Number of folds cannot be less than 2")
+
     if sample_size is None:
         features = pd.read_parquet(features_path)
     elif sample_size <= 0:
@@ -43,6 +46,7 @@ def train_model(
     skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_seed)
     fold_metrics = []
     fold_predictions = []
+    fold_importances = []
 
     for fold, (train_idx, validation_idx) in enumerate(skf.split(X, y)):
         train_X = X.iloc[train_idx]
@@ -52,27 +56,37 @@ def train_model(
         validation_ids = customer_ID.iloc[validation_idx]
 
         result = train_one_fold(train_X, train_y, validation_X, validation_y, validation_ids, random_seed, fold + 1)
-        
         model = result["model"]
-        predictions_df = result["predictions_df"]
-        metrics = result["metrics"]
-
-        fold_metrics.append(metrics)
-        fold_predictions.append(predictions_df)
-
-        predictions_df.to_csv(output_path / f"validation_predictions_fold_{fold + 1}.csv", index=False)
         model.booster_.save_model(output_path / f"model_fold_{fold + 1}.txt")
-        with open(output_path / f"metrics_fold_{fold + 1}.json", "w") as f:
-            json.dump(metrics, f, indent=4)
+
+        fold_predictions.append(result["predictions_df"])
+        fold_metrics.append(result["metrics"])
+        fold_importances.append(
+            pd.DataFrame({
+                "feature": model.booster_.feature_name(),
+                "importance_gain": model.booster_.feature_importance(importance_type="gain"),
+                "fold": fold + 1
+            })
+        )
     
     oof_predictions = pd.concat(fold_predictions, ignore_index=True)
+    combined_fold_importances = pd.concat(fold_importances, ignore_index=True)
+
+    average_feature_importance = (
+        combined_fold_importances.groupby("feature")["importance_gain"]
+        .mean()
+        .reset_index()
+        .sort_values(by="importance_gain", ascending=False)
+    )
 
     if len(oof_predictions) != len(X): 
         raise ValueError("Some customers default probability hasn't been predicted")
     if oof_predictions["customer_ID"].duplicated().any():
         raise ValueError("There are duplicate predictions for some customers")
     
+    combined_fold_importances.to_csv(output_path / "feature_importance_folds.csv", index=False)
     oof_predictions.to_csv(output_path / f"oof_predictions.csv", index=False)
+    average_feature_importance.to_csv(output_path / "feature_importance.csv", index=False)
 
     oof_auc_score = roc_auc_score(oof_predictions["target"], oof_predictions["prediction_probability"])
     oof_pr_auc_score= average_precision_score(oof_predictions["target"], oof_predictions["prediction_probability"])
@@ -155,7 +169,7 @@ def _argument_parser():
         type=str, 
         required=False, 
         default=OUTPUT_DIR, 
-        help="Directory where the trained model, metrics, and validation predictions will be saved."
+        help="Directory where the trained model, metrics, and OOF predictions will be saved."
     )
     parser.add_argument(
         "--features-path",
