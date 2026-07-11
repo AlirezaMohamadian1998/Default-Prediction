@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from amex_default import constants
 from amex_default.metrics import amex_metric
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score
 from lightgbm import LGBMClassifier, early_stopping, log_evaluation
 
@@ -13,15 +13,15 @@ OUTPUT_DIR = "artifacts/model"
 LABELS_PATH = "train_labels.csv"
 FEATURES_PATH = "artifacts/train_features.parquet"
 RANDOM_SEED = constants.DEFAULT_SEED
-TEST_SIZE = 0.2
+
 
 def train_model(
         output_dir= OUTPUT_DIR,
         features_path=FEATURES_PATH,
         labels_path=LABELS_PATH,
         sample_size=None,
-        test_size=TEST_SIZE,
-        random_seed=RANDOM_SEED
+        random_seed=RANDOM_SEED,
+        folds= 5
     ):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -35,14 +35,64 @@ def train_model(
 
     labels = pd.read_csv(labels_path)
     labels.set_index('customer_ID', inplace=True)
-    customer_IDs = features["customer_ID"].copy()
     customer_ID = features.pop("customer_ID")
 
     X = features
     y = labels.loc[customer_ID, 'target']
 
-    train_X, test_X, train_y, test_y, _, test_ids = train_test_split(X, y, customer_IDs, random_state=random_seed, test_size=test_size, stratify=y)
+    skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_seed)
+    fold_metrics = []
+    fold_predictions = []
 
+    for fold, (train_idx, validation_idx) in enumerate(skf.split(X, y)):
+        train_X = X.iloc[train_idx]
+        train_y = y.iloc[train_idx]
+        validation_X = X.iloc[validation_idx]
+        validation_y = y.iloc[validation_idx]
+        validation_ids = customer_ID.iloc[validation_idx]
+
+        result = train_one_fold(train_X, train_y, validation_X, validation_y, validation_ids, random_seed, fold + 1)
+        
+        model = result["model"]
+        predictions_df = result["predictions_df"]
+        metrics = result["metrics"]
+
+        fold_metrics.append(metrics)
+        fold_predictions.append(predictions_df)
+
+        predictions_df.to_csv(output_path / f"validation_predictions_fold_{fold + 1}.csv", index=False)
+        model.booster_.save_model(output_path / f"model_fold_{fold + 1}.txt")
+        with open(output_path / f"metrics_fold_{fold + 1}.json", "w") as f:
+            json.dump(metrics, f, indent=4)
+    
+    oof_predictions = pd.concat(fold_predictions, ignore_index=True)
+
+    if len(oof_predictions) != len(X): 
+        raise ValueError("Some customers default probability hasn't been predicted")
+    if oof_predictions["customer_ID"].duplicated().any():
+        raise ValueError("There are duplicate predictions for some customers")
+    
+    oof_predictions.to_csv(output_path / f"oof_predictions.csv", index=False)
+
+    oof_auc_score = roc_auc_score(oof_predictions["target"], oof_predictions["prediction_probability"])
+    oof_pr_auc_score= average_precision_score(oof_predictions["target"], oof_predictions["prediction_probability"])
+    oof_amex_score = amex_metric(oof_predictions["target"], oof_predictions["prediction_probability"])
+
+    summary_metrics = {
+        "roc_auc": oof_auc_score,
+        "pr_auc": oof_pr_auc_score,
+        "amex_metric": oof_amex_score,
+        "total_customer_count": len(oof_predictions),
+        "random_seed": random_seed,
+        "fold_count": folds,
+        "individual_fold_metrics": fold_metrics
+    }
+
+    with open(output_path / "metrics.json", "w") as f:
+        json.dump(summary_metrics, f, indent=4)
+
+
+def train_one_fold(train_X, train_y, validation_X, validation_y, validation_ids, random_seed, fold_num):
     model = LGBMClassifier(
         objective="binary",
         n_estimators=1500,
@@ -59,46 +109,46 @@ def train_model(
 
     model.fit(
         X=train_X, y=train_y,
-        eval_set=[(test_X, test_y)],
+        eval_set=[(validation_X, validation_y)],
         eval_metric=['average_precision', 'auc'],
         callbacks=callbacks
     )
 
-    probabilities = np.asarray(model.predict_proba(test_X))
+    probabilities = np.asarray(model.predict_proba(validation_X))
     validation_probabilities = probabilities[:, 1]
 
-    auc_score = roc_auc_score(test_y, validation_probabilities)
-    pr_auc_score= average_precision_score(test_y, validation_probabilities)
-    amex_score = amex_metric(test_y, validation_probabilities)
+    auc_score = roc_auc_score(validation_y, validation_probabilities)
+    pr_auc_score= average_precision_score(validation_y, validation_probabilities)
+    amex_score = amex_metric(validation_y, validation_probabilities)
 
-    model.booster_.save_model(output_path / "model.txt")
     metrics = {
         "roc_auc": auc_score,
         "pr_auc": pr_auc_score,
         "amex_metric": amex_score,
-        "sample_size": sample_size if sample_size is not None else len(features),
+        "training_size": len(train_X),
         "random_seed": random_seed,
-        "validation_size": test_size,
-        "best_iteration": model.best_iteration_
+        "validation_size": len(validation_X),
+        "best_iteration": model.best_iteration_,
+        "fold": fold_num
     }
-    with open(output_path / "metrics.json", "w") as f:
-        json.dump(metrics, f, indent=4)
-    print(f"Saved metrics to {output_path}/metrics.json")
 
     predictions_df = pd.DataFrame({
-        "customer_ID": test_ids,
-        "target": test_y.values,
-        "prediction_probability": validation_probabilities
+        "customer_ID": validation_ids,
+        "target": validation_y.values,
+        "prediction_probability": validation_probabilities,
+        "fold": fold_num
     })
-    predictions_df.to_csv(output_path / "validation_predictions.csv", index=False)
 
-    print(f"ROC-AUC Score: {auc_score:.4f}")
-    print(f"PR-AUC Score: {pr_auc_score:.4f}")
-    print(f"AMEX score: {amex_score:.4f}")
+    return {
+        "model": model,
+        "predictions_df": predictions_df,
+        "metrics": metrics
+    }
+
 
 def _argument_parser():
     parser = argparse.ArgumentParser(
-        description="Train a baseline LightGBM default-risk model from prepared AMEX customer features."
+        description="Train a stratified cross-validation LightGBM default-risk model from prepared AMEX customer features."
     )
     parser.add_argument(
         "--output-dir",
@@ -129,20 +179,21 @@ def _argument_parser():
         help="Number of customer rows to randomly sample before training. Omit to use all rows"
     )
     parser.add_argument(
-        "--validation-size", 
-        type=float, 
-        required=False, 
-        default=TEST_SIZE, 
-        help="Fraction of sampled customers held out for validation and early stopping"
-    )
-    parser.add_argument(
         "--random-seed", 
         type=int, 
         required=False, 
         default=RANDOM_SEED, 
-        help="Random seed used for sampling and train/validation splitting."
+        help="Random seed used for sampling and stratified fold splitting"
+    )
+    parser.add_argument(
+        "--folds", 
+        type=int, 
+        required=False, 
+        default=5, 
+        help="Number of stratified cross-validation folds"
     )
     return parser
+
 
 def main():
     parser = _argument_parser()
@@ -153,9 +204,8 @@ def main():
         features_path=args.features_path,
         labels_path=args.labels_path,
         sample_size=args.sample_size,
-        test_size=args.validation_size,
-        random_seed=args.random_seed
-
+        random_seed=args.random_seed,
+        folds=args.folds
     )
 
 if __name__ == "__main__":
