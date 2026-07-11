@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from sklearn.metrics import f1_score, recall_score, precision_score
 
 def _build_metric_table(y_true, y_pred):
     table = pd.DataFrame(
@@ -52,6 +53,33 @@ def weighted_gini(y_true, y_pred):
     default_cumulative = table["weighted_target"].cumsum() / total_weighted_defaults
 
     return ((default_cumulative - random_cumulative) * table["weight"]).sum()
+
+def select_f1_threshold(true_y, probabilities, thresholds):
+    if len(thresholds) == 0:
+        raise ValueError("Cannot have an empty list for thresholds")
+    result = []
+    for threshold in thresholds:
+        predicted_labels = probabilities >= threshold
+        score_f1 = f1_score(true_y, predicted_labels)
+        result.append({"threshold": threshold, "f1_score": score_f1})
+
+    result_df = pd.DataFrame(result)
+    best = result_df.loc[result_df["f1_score"].idxmax()]
+    best_threshold = best["threshold"]
+    best_f1 = best["f1_score"]
+
+    predicted_labels = probabilities >= best_threshold
+    score_precision = precision_score(true_y, predicted_labels)
+    score_recall = recall_score(true_y, predicted_labels)
+    predicted_default_count = predicted_labels.sum()
+    return {
+        "threshold": float(best_threshold), #type: ignore
+        "f1_score": float(best_f1), #type: ignore
+        "precision_score": score_precision,
+        "recall_score": score_recall,
+        "predicted_default_count": int(predicted_default_count)
+    }
+
 
 def amex_metric(y_true, y_pred) -> float:
     capture_score = top_four_percent_captured(y_true, y_pred)

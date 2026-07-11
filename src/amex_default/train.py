@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 from amex_default import constants
-from amex_default.metrics import amex_metric
+from amex_default.metrics import amex_metric, select_f1_threshold
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score
 from lightgbm import LGBMClassifier, early_stopping, log_evaluation
@@ -92,6 +92,9 @@ def train_model(
     oof_pr_auc_score= average_precision_score(oof_predictions["target"], oof_predictions["prediction_probability"])
     oof_amex_score = amex_metric(oof_predictions["target"], oof_predictions["prediction_probability"])
 
+    thresholds = np.arange(0.05, 0.96, 0.01)
+    select_threshold = select_f1_threshold(oof_predictions["target"], oof_predictions["prediction_probability"], thresholds)
+
     summary_metrics = {
         "roc_auc": oof_auc_score,
         "pr_auc": oof_pr_auc_score,
@@ -99,6 +102,7 @@ def train_model(
         "total_customer_count": len(oof_predictions),
         "random_seed": random_seed,
         "fold_count": folds,
+        "threshold_selection": select_threshold,
         "individual_fold_metrics": fold_metrics
     }
 
