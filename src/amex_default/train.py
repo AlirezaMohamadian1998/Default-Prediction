@@ -6,7 +6,7 @@ from pathlib import Path
 from amex_default import constants
 from amex_default.metrics import amex_metric, select_f1_threshold
 from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
 from lightgbm import LGBMClassifier, early_stopping, log_evaluation
 
 OUTPUT_DIR = "artifacts/model"
@@ -89,8 +89,9 @@ def train_model(
     average_feature_importance.to_csv(output_path / "feature_importance.csv", index=False)
 
     oof_auc_score = roc_auc_score(oof_predictions["target"], oof_predictions["prediction_probability"])
-    oof_pr_auc_score= average_precision_score(oof_predictions["target"], oof_predictions["prediction_probability"])
+    oof_pr_auc_score = average_precision_score(oof_predictions["target"], oof_predictions["prediction_probability"])
     oof_amex_score = amex_metric(oof_predictions["target"], oof_predictions["prediction_probability"])
+    oof_brier_score = brier_score_loss(oof_predictions["target"], oof_predictions["prediction_probability"])
 
     thresholds = np.arange(0.05, 0.96, 0.01)
     select_threshold = select_f1_threshold(oof_predictions["target"], oof_predictions["prediction_probability"], thresholds)
@@ -99,6 +100,7 @@ def train_model(
         "roc_auc": oof_auc_score,
         "pr_auc": oof_pr_auc_score,
         "amex_metric": oof_amex_score,
+        "brier_score": oof_brier_score,
         "total_customer_count": len(oof_predictions),
         "random_seed": random_seed,
         "fold_count": folds,
@@ -138,11 +140,13 @@ def train_one_fold(train_X, train_y, validation_X, validation_y, validation_ids,
     auc_score = roc_auc_score(validation_y, validation_probabilities)
     pr_auc_score= average_precision_score(validation_y, validation_probabilities)
     amex_score = amex_metric(validation_y, validation_probabilities)
+    brier_score = brier_score_loss(validation_y, validation_probabilities)
 
     metrics = {
         "roc_auc": auc_score,
         "pr_auc": pr_auc_score,
         "amex_metric": amex_score,
+        "brier_score": brier_score,
         "training_size": len(train_X),
         "random_seed": random_seed,
         "validation_size": len(validation_X),
