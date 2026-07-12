@@ -47,6 +47,7 @@ def train_model(
     fold_metrics = []
     fold_predictions = []
     fold_importances = []
+    model_names = []
 
     for fold, (train_idx, validation_idx) in enumerate(skf.split(X, y)):
         train_X = X.iloc[train_idx]
@@ -58,6 +59,7 @@ def train_model(
         result = train_one_fold(train_X, train_y, validation_X, validation_y, validation_ids, random_seed, fold + 1)
         model = result["model"]
         model.booster_.save_model(output_path / f"model_fold_{fold + 1}.txt")
+        model_names.append(f"model_fold_{fold + 1}.txt")
 
         fold_predictions.append(result["predictions_df"])
         fold_metrics.append(result["metrics"])
@@ -95,6 +97,20 @@ def train_model(
 
     thresholds = np.arange(0.05, 0.96, 0.01)
     select_threshold = select_f1_threshold(oof_predictions["target"], oof_predictions["prediction_probability"], thresholds)
+
+    manifest = {
+        "feature_names": X.columns.tolist(),
+        "id_column": "customer_ID",
+        "feature_count": len(X.columns),
+        "fold_count": folds,
+        "random_seed": random_seed,
+        "threshold": select_threshold["threshold"],
+        "model_files": model_names,
+        "lightgbm_params": model.get_params()
+    }
+
+    with open(output_path / "manifest.json", "w") as f:
+        json.dump(manifest, f, indent=4)
 
     summary_metrics = {
         "roc_auc": oof_auc_score,

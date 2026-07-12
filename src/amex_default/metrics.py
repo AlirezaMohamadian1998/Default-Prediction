@@ -55,6 +55,7 @@ def weighted_gini(y_true, y_pred):
     return ((default_cumulative - random_cumulative) * table["weight"]).sum()
 
 def select_f1_threshold(true_y, probabilities, thresholds):
+    probabilities = np.asarray(probabilities)
     if len(thresholds) == 0:
         raise ValueError("Cannot have an empty list for thresholds")
     result = []
