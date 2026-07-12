@@ -52,12 +52,12 @@ def test_prepare_features_end_to_end(tmp_path):
     connection.close()
 
     returned_path = prepare_features(
-        str(train_path),
-        str(labels_path),
-        str(final_features_path),
-        str(work_dir),
-        str(duckdb_tmp_dir),
-        1
+        train_path=str(train_path),
+        labels_path=str(labels_path),
+        final_output_path_str=str(final_features_path),
+        working_directory_str=str(work_dir),
+        temp_directory=str(duckdb_tmp_dir),
+        threads=1
     )
 
     assert returned_path == str(final_features_path)
@@ -92,3 +92,32 @@ def test_prepare_features_end_to_end(tmp_path):
 
     assert result[0] == ("customer a", 3, 1.0, 1, 59)
     assert result[1] == ("customer b", 1, None, 0, 0)
+
+    prediction_features_path = tmp_path / "prediction_features.parquet"
+    prediction_work_dir = tmp_path / "prediction_work"
+    prediction_duckdb_tmp_dir = tmp_path / "prediction_duckdb_tmp"
+
+    prepare_features(
+        train_path=str(train_path),
+        labels_path=None,
+        final_output_path_str=str(prediction_features_path),
+        working_directory_str=str(prediction_work_dir),
+        temp_directory=str(prediction_duckdb_tmp_dir),
+        threads=1,
+    )
+
+    assert prediction_features_path.is_file()
+
+    connection = duckdb.connect()
+    prediction_result_count = connection.execute(
+        """
+        SELECT
+            COUNT(*),
+            COUNT(DISTINCT customer_ID)
+        FROM read_parquet(?)
+        """,
+        [str(prediction_features_path)],
+    ).fetchone()
+    connection.close()
+
+    assert prediction_result_count[0] == prediction_result_count[1] == 2  # type: ignore

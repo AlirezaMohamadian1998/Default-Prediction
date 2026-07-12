@@ -114,7 +114,7 @@ def _validate_intermediate_features(connection, numerical_output_paths, categori
 def argument_parser():
     parser = argparse.ArgumentParser(description="Prepare one-row-per-customer AMEX features from monthly statements.")
     parser.add_argument("--input", type=str, required=True, help="Path to the raw monthly statement parquet file")
-    parser.add_argument("--labels", type=str, required=True, help="Path to the training labels CSV file")
+    parser.add_argument("--labels", type=str, required=False, default=None, help="Path to the training labels CSV file. May be omitted for prediction data.")
     parser.add_argument("--output", type=str, required=True, help="Path where the final prepared feature parquet will be written")
     parser.add_argument("--working-directory", type=str, required=False, default="artifacts/intermediate", help="Directory for intermediate numeric and categorical parquet files")
     parser.add_argument("--temp-directory", type=str, required=False, default="artifacts/duckdb_tmp", help="Directory DuckDB can use for temporary spill files")
@@ -125,10 +125,10 @@ def argument_parser():
 
 def prepare_features(
         train_path: str, 
-        labels_path: str, 
         final_output_path_str: str,
         working_directory_str: str, 
         temp_directory, 
+        labels_path: str | None = None, 
         threads=constants.DEFAULT_THREADS,
         memory_limit = constants.DEFAULT_MEMORY_LIMIT,
         chunk_size = constants.DEFAULT_CHUNK_SIZE

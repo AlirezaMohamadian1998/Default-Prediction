@@ -1,6 +1,8 @@
 from amex_default.database import connect
 
-def audit_dataset(train_path: str, labels_path: str):
+def audit_dataset(train_path: str, labels_path: str|None = None):
+    label_counts = None
+    positive_rate = None
     connection = connect()
     try:
         schema = connection.execute(
@@ -38,26 +40,27 @@ def audit_dataset(train_path: str, labels_path: str):
             [train_path]
         ).fetchone()  # type: ignore
 
-        label_counts = connection.execute(
-            """
-            SELECT target, 
-            COUNT(*) AS label_count
-            FROM read_csv_auto(?, header=true)
-            GROUP BY target
-            ORDER BY target
-            """,
-            [labels_path]
-        ).fetchall()  # type: ignore
+        if labels_path is not None:
+            label_counts = connection.execute(
+                """
+                SELECT target, 
+                COUNT(*) AS label_count
+                FROM read_csv_auto(?, header=true)
+                GROUP BY target
+                ORDER BY target
+                """,
+                [labels_path]
+            ).fetchall()  # type: ignore
 
-        label_count_by_target = dict(label_counts)
-        actual_targets = set(label_count_by_target)
-        if actual_targets != {0, 1}:
-            raise ValueError(
-                f"Expected binary targets {{0, 1}}, found {actual_targets}"
-            )
+            label_count_by_target = dict(label_counts)
+            actual_targets = set(label_count_by_target)
+            if actual_targets != {0, 1}:
+                raise ValueError(
+                    f"Expected binary targets {{0, 1}}, found {actual_targets}"
+                )
 
-        total_labels = sum(label_count_by_target.values())
-        positive_rate = label_count_by_target[1] / total_labels
+            total_labels = sum(label_count_by_target.values())
+            positive_rate = label_count_by_target[1] / total_labels
     finally:
         connection.close()
     
