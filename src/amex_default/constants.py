@@ -1,6 +1,8 @@
 import os
 from typing import Final
 
+PREPARATION_PIPELINE_VERSION: Final[int] = 1
+
 CUSTOMER_ID: Final[str] = "customer_ID"
 DATE_COLUMN: Final[str] = "S_2"
 TARGET: Final[str] = "target"
@@ -28,4 +30,3 @@ DEFAULT_SEED: Final[int] = 42
 DEFAULT_MEMORY_LIMIT: Final[str] = "8GB"
 DEFAULT_THREADS: Final[int] = max(1, (os.cpu_count() or 1) - 2)
 DEFAULT_CHUNK_SIZE = 20
-

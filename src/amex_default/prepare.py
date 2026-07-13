@@ -4,6 +4,7 @@ from amex_default.audit import audit_dataset
 from amex_default import constants
 from pathlib import Path
 import argparse
+import json
 
 def _build_numerical_query(numerical_columns, clean_expression):
     numerical_aggregate_expression = ",\n".join(features.build_all_numeric_expressions(numerical_columns))
@@ -70,6 +71,9 @@ def _copy_query_to_parquet(connection, query, parameters):
     connection.execute(f"COPY({query}) TO $output_path (FORMAT PARQUET, COMPRESSION ZSTD)", parameters)
 
 def chunk_helper(columns:list, chunk_size:int) -> list[list]:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be at least 1")
+
     copy_column = columns.copy()
     chunk_columns = []
 
@@ -123,6 +127,57 @@ def argument_parser():
     parser.add_argument("--chunk-size", type=int, required=False, default=constants.DEFAULT_CHUNK_SIZE, help="Number of numeric raw columns to aggregate per intermediate chunk")
     return parser
 
+def _build_preparation_manifest(
+        train_path:str,
+        audit_result:dict,
+        numeric_columns:list,
+        categorical_columns:list,
+        chunk_size:int
+):
+    absolute_path = Path(train_path).resolve()
+    train_metadata = absolute_path.stat()
+
+    return {
+        "pipeline_version": constants.PREPARATION_PIPELINE_VERSION,
+        "input_path": str(absolute_path),
+        "input_size_bytes": train_metadata.st_size,
+        "input_modified_ns": train_metadata.st_mtime_ns,
+        "statement_count": audit_result["statement_count"],
+        "customer_count": audit_result["customer_count"],
+        "schema": audit_result["schema"][["column_name", "column_type"]].to_dict(orient="records"),
+        "sentinel_counts": audit_result["sentinel_counts"],
+        "numeric_columns": numeric_columns.copy(),
+        "categorical_columns": categorical_columns.copy(),
+        "chunk_size": chunk_size
+    }
+
+def _write_preparation_manifest(output_path:Path, manifest:dict):
+    tmp_path = Path(str(output_path)+".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as file:
+        json.dump(manifest, file, indent=4)
+    tmp_path.replace(output_path)
+
+def _load_preparation_manifest(manifest_path:Path) -> dict | None:
+    if not manifest_path.exists():
+        return None
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    return manifest
+
+def _remove_intermediate_artifacts(working_dir: Path):
+    for file in working_dir.glob("numeric_features_*.parquet"):
+        file.unlink(missing_ok=True)
+
+    fixed_files = [
+        working_dir / "categorical_history_features.parquet",
+        working_dir / "preparation_manifest.json",
+        working_dir / "preparation_manifest.json.tmp"
+    ]
+
+    for file in fixed_files:
+        file.unlink(missing_ok=True)
+
 def prepare_features(
         train_path: str, 
         final_output_path_str: str,
@@ -143,6 +198,21 @@ def prepare_features(
 
     numerical_chunk_columns = chunk_helper(numerical_columns,chunk_size)
     chunks_num = len(numerical_chunk_columns)
+
+    manifest_path = working_directory / "preparation_manifest.json"
+    current_manifest = _build_preparation_manifest(
+        train_path,
+        audit_result,
+        numerical_columns,
+        categorical_columns,
+        chunk_size
+    )
+
+    saved_manifest = _load_preparation_manifest(manifest_path)
+    can_reuse_intermediates = saved_manifest == current_manifest
+
+    if not can_reuse_intermediates:
+        _remove_intermediate_artifacts(working_directory)
 
     clean_expression = ",\n".join(features.build_clean_source_expressions(schema, sentinel_counts))
     categorical_history_query = _build_categorical_history_query(categorical_columns, clean_expression)
@@ -172,6 +242,8 @@ def prepare_features(
 
         _validate_intermediate_features(connection, numerical_output_paths, categorical_output_path, audit_result["customer_count"])
 
+        _write_preparation_manifest(manifest_path, current_manifest)
+
         parameters = {
             **{f"numeric_path_{i}": numerical_output_paths[i] for i in range(chunks_num)},
             "categorical_path": categorical_output_path,
@@ -184,7 +256,6 @@ def prepare_features(
         connection.close()
 
     return final_output_path_str
-
 
 def main():
     parser = argument_parser()
