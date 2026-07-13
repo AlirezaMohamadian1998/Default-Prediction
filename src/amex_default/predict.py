@@ -2,6 +2,7 @@ import json
 import warnings
 import pandas as pd
 import numpy as np
+import argparse
 from pathlib import Path
 from lightgbm import Booster
 from tempfile import TemporaryDirectory
@@ -114,13 +115,15 @@ def predict_prepared_features(prepared_features_path, models_dir, output_path):
     prediction_output.to_csv(output_csv_path, index=False)
     return prediction_output
 
-def predict_defaults(raw_input_path, 
-                     model_dir, 
-                     prediction_output_path, 
-                     prepared_output_path=None,
-                     threads=constants.DEFAULT_THREADS, 
-                     memory_limit=constants.DEFAULT_MEMORY_LIMIT, 
-                     chunk_size=constants.DEFAULT_CHUNK_SIZE):
+def predict_defaults(
+        raw_input_path,
+        model_dir,
+        prediction_output_path,
+        prepared_output_path=None,
+        threads=constants.DEFAULT_THREADS,
+        memory_limit=constants.DEFAULT_MEMORY_LIMIT,
+        chunk_size=constants.DEFAULT_CHUNK_SIZE
+    ):
     if not Path(raw_input_path).exists():
         raise FileNotFoundError("Raw parquet file doesn't exist.")
     
@@ -146,3 +149,64 @@ def predict_defaults(raw_input_path,
             chunk_size=chunk_size
             )
         return predict_prepared_features(prepared_features_path, model_dir, prediction_output_path)
+
+def _argument_parser():
+    parser = argparse.ArgumentParser(
+        description="Predict AMEX customer default risk from raw monthly statement data"
+    )
+    parser.add_argument(
+        "--input", type=str, required=True, help="Path to the raw monthly statement parquet file to score"
+    )
+    parser.add_argument(
+        "--model-dir", type=str, required=True, help="Directory containing the trained fold models and manifest.json"
+    )
+    parser.add_argument(
+        "--output", type=str, required=True, help="Path where the prediction CSV file will be written"
+    )
+    parser.add_argument(
+        "--prepared-output",
+        type=str,
+        required=False,
+        default=None,
+        help="Optional path for retaining the prepared customer feature parquet; omit to use a temporary file"
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        required=False,
+        default=constants.DEFAULT_THREADS,
+        help="Number of DuckDB worker threads used during feature preparation"
+    )
+    parser.add_argument(
+        "--memory-limit",
+        type=str,
+        required=False,
+        default=constants.DEFAULT_MEMORY_LIMIT,
+        help="DuckDB memory limit used during feature preparation, for example 8GB or 10GB"
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        required=False,
+        default=constants.DEFAULT_CHUNK_SIZE,
+        help="Number of numeric raw columns aggregated per intermediate chunk"
+    )
+
+    return parser
+
+def main():
+    parser = _argument_parser()
+    args = parser.parse_args()
+    predict_defaults(
+        raw_input_path=args.input,
+        model_dir=args.model_dir,
+        prediction_output_path=args.output,
+        prepared_output_path=args.prepared_output,
+        threads=args.threads,
+        memory_limit=args.memory_limit,
+        chunk_size=args.chunk_size
+    )
+    print(f"Predictions written to {args.output}")
+
+if __name__ == "__main__":
+    main()
