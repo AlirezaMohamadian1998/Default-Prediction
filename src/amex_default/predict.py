@@ -19,6 +19,14 @@ def load_model_artifacts(models_dir:str):
     with open(manifest_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
     
+    preparation_pipeline_version = manifest.get("preparation_pipeline_version")
+    if preparation_pipeline_version is None:
+        raise ValueError("The model manifest is outdated and the model must be retrained")
+    if preparation_pipeline_version != constants.PREPARATION_PIPELINE_VERSION:
+        raise ValueError(
+            f"The model preparation pipeline version ({preparation_pipeline_version}) does not match the current version ({constants.PREPARATION_PIPELINE_VERSION}). Retrain the model."
+        )
+
     if len(manifest["feature_names"]) != manifest["feature_count"]:
         raise ValueError("Manifest file is corrupted, feature count is not consistent")
     
@@ -92,14 +100,13 @@ def predict_with_ensemble(models: list[Booster], ordered_features: pd.DataFrame,
         }
     )
 
-def predict_prepared_features(prepared_features_path, models_dir, output_path):
+def predict_prepared_features(prepared_features_path, model_artifacts, output_path):
     parquet_path = Path(prepared_features_path)
     output_csv_path = Path(output_path)
 
     if not parquet_path.exists():
         raise FileNotFoundError("Prepared parquet file doesn't exist")
     
-    model_artifacts = load_model_artifacts(models_dir)
     models = model_artifacts["models"]
     manifest = model_artifacts["manifest"]
     
@@ -126,7 +133,9 @@ def predict_defaults(
     ):
     if not Path(raw_input_path).exists():
         raise FileNotFoundError("Raw parquet file doesn't exist.")
-    
+
+    model_artifacts = load_model_artifacts(model_dir)
+
     with TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
         
@@ -148,7 +157,7 @@ def predict_defaults(
             memory_limit=memory_limit,
             chunk_size=chunk_size
             )
-        return predict_prepared_features(prepared_features_path, model_dir, prediction_output_path)
+        return predict_prepared_features(prepared_features_path, model_artifacts, prediction_output_path)
 
 def _argument_parser():
     parser = argparse.ArgumentParser(
