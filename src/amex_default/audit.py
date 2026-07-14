@@ -1,5 +1,5 @@
 from amex_default.database import connect
-from amex_default.constants import CUSTOMER_ID, TARGET
+from amex_default.constants import CUSTOMER_ID, TARGET, DATE_COLUMN
 
 def audit_dataset(train_path: str, labels_path: str|None = None):
     label_counts = None
@@ -15,15 +15,43 @@ def audit_dataset(train_path: str, labels_path: str|None = None):
             [train_path]
         ).fetchdf()
 
-        sentinel_counts = audit_sentinel_cols(train_path, connection, schema)
+        if not {CUSTOMER_ID, DATE_COLUMN}.issubset(set(schema["column_name"])):
+            raise ValueError(f"{CUSTOMER_ID} or {DATE_COLUMN} is missing from the dataset.")
 
-        statement_count, customer_count = connection.execute(
+        statement_count, customer_count, null_customer_count, null_date_count, duplicate_statement_count = connection.execute(
             f"""
-            SELECT COUNT(*) AS statement_count, COUNT(DISTINCT {CUSTOMER_ID}) AS customer_count
-            FROM read_parquet(?)
+            WITH statement_rows AS (
+                SELECT
+                    {CUSTOMER_ID},
+                    {DATE_COLUMN}
+                FROM read_parquet(?)
+            ),
+            duplicate_pairs AS (
+                SELECT *
+                FROM statement_rows
+                GROUP BY *
+                HAVING COUNT(*) > 1
+            )
+            SELECT
+                COUNT(*) AS statement_count,
+                COUNT(DISTINCT {CUSTOMER_ID}) AS customer_count,
+                COUNT(*) FILTER (WHERE {CUSTOMER_ID} IS NULL) AS null_customer_count,
+                COUNT(*) FILTER (WHERE {DATE_COLUMN} IS NULL) AS null_date_count,
+                (SELECT COUNT(*) FROM duplicate_pairs) AS duplicate_statement_count
+            FROM statement_rows
             """,
             [train_path]
         ).fetchone()  # type: ignore
+
+        if null_customer_count > 0:
+            raise ValueError(f"Some {CUSTOMER_ID}s are Null which is unacceptable.")
+        if null_date_count > 0:
+            raise ValueError(f"Some {DATE_COLUMN}s are Null which is unacceptable.")
+        if duplicate_statement_count > 0:
+            raise ValueError(f"{duplicate_statement_count} duplicate customer-date combinations")
+        
+        sentinel_counts = audit_sentinel_cols(train_path, connection, schema)
+
 
         min_statements, max_statements, avg_statements = connection.execute(
             f"""
