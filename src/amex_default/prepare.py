@@ -113,7 +113,31 @@ def _validate_intermediate_features(connection, numerical_output_paths, categori
     if(numeric_row_count == numeric_customer_count == count_categorical_customer[0] == count_categorical_customer[1] == expected_customer_count):
         return
     else:
-        raise ValueError("Intermediate feature files contain duplicate or missing customers")    
+        raise ValueError("Intermediate feature files contain duplicate or missing customers")
+
+def _validate_final_features(connection, output, expected_customer_count):
+    total_rows, distinct_customer_count, null_customer_count = connection.execute(
+        f"""
+        SELECT
+            COUNT(*),
+            COUNT(DISTINCT {constants.CUSTOMER_ID}),
+            COUNT(*) FILTER (WHERE {constants.CUSTOMER_ID} IS NULL)
+        FROM read_parquet(?)
+        """,
+        [output]
+    ).fetchone()
+
+    if not (total_rows == expected_customer_count == distinct_customer_count):
+        raise ValueError(
+            f"""
+            The counts don't match.
+            Total rows: {total_rows}
+            Expected customer count: {expected_customer_count}
+            Distinct customer count: {distinct_customer_count}
+            """
+        )
+    if null_customer_count != 0:
+        raise ValueError("Null is not acceptable for customer_ID")
 
 def argument_parser():
     parser = argparse.ArgumentParser(description="Prepare one-row-per-customer AMEX features from monthly statements.")
@@ -251,6 +275,7 @@ def prepare_features(
         }
 
         _copy_query_to_parquet(connection, build_final_join_query(chunks_num), parameters)
+        _validate_final_features(connection, final_output_path_str, audit_result["customer_count"])
 
     finally:
         connection.close()

@@ -1,7 +1,9 @@
 import duckdb
-from amex_default.prepare import prepare_features
+import pytest
+from amex_default.prepare import prepare_features, chunk_helper
 
 def test_prepare_features_end_to_end(tmp_path):
+    # Pytest gives this test its own temporary folder, so it does not touch the real artifacts.
     train_path = tmp_path / "train.parquet"
     labels_path = tmp_path / "labels.csv"
     final_features_path = tmp_path / "final_features.parquet"
@@ -75,6 +77,7 @@ def test_prepare_features_end_to_end(tmp_path):
 
     assert result_count[0] == result_count[1] == 2 # type: ignore
 
+    # Check a few feature values by hand so we know the time-based calculations are correct.
     result = connection.execute(
         """
         SELECT
@@ -93,6 +96,46 @@ def test_prepare_features_end_to_end(tmp_path):
     assert result[0] == ("customer a", 3, 1.0, 1, 59)
     assert result[1] == ("customer b", 1, None, 0, 0)
 
+    # Running the same configuration again should reuse the existing intermediate parquet.
+    numeric_intermediate_path = work_dir / "numeric_features_0.parquet"
+    intermediate_modified_before = numeric_intermediate_path.stat().st_mtime_ns
+    reused_features_path = tmp_path / "reused_features.parquet"
+
+    prepare_features(
+        train_path=str(train_path),
+        labels_path=str(labels_path),
+        final_output_path_str=str(reused_features_path),
+        working_directory_str=str(work_dir),
+        temp_directory=str(duckdb_tmp_dir),
+        threads=1,
+    )
+
+    intermediate_modified_after = numeric_intermediate_path.stat().st_mtime_ns
+
+    assert intermediate_modified_after == intermediate_modified_before
+    assert reused_features_path.is_file()
+
+    # A changed chunk size makes the old manifest invalid, so even a fake stale chunk must be removed.
+    stale_intermediate_path = work_dir / "numeric_features_999.parquet"
+    stale_intermediate_path.touch()
+    rebuilt_features_path = tmp_path / "rebuilt_features.parquet"
+
+    assert stale_intermediate_path.is_file()
+
+    prepare_features(
+        train_path=str(train_path),
+        labels_path=str(labels_path),
+        final_output_path_str=str(rebuilt_features_path),
+        working_directory_str=str(work_dir),
+        temp_directory=str(duckdb_tmp_dir),
+        threads=1,
+        chunk_size=1,
+    )
+
+    assert not stale_intermediate_path.exists()
+    assert rebuilt_features_path.is_file()
+
+    # Prediction preparation uses the same features but must also work without a labels file.
     prediction_features_path = tmp_path / "prediction_features.parquet"
     prediction_work_dir = tmp_path / "prediction_work"
     prediction_duckdb_tmp_dir = tmp_path / "prediction_duckdb_tmp"
@@ -121,3 +164,9 @@ def test_prepare_features_end_to_end(tmp_path):
     connection.close()
 
     assert prediction_result_count[0] == prediction_result_count[1] == 2  # type: ignore
+
+def test_chunk_helper_rejects_nonpositive_chunk_size():
+    with pytest.raises(ValueError):
+        chunk_helper(["S_2", "P_2", "D_39"], 0)
+    with pytest.raises(ValueError):
+        chunk_helper(["S_2", "P_2", "D_39"], -1)
