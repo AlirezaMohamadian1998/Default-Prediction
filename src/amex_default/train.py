@@ -3,7 +3,7 @@ import numpy as np
 import argparse
 import json
 from pathlib import Path
-from amex_default import constants
+from amex_default.constants import CUSTOMER_ID, TARGET, DEFAULT_SEED
 from amex_default.metrics import amex_metric, select_f1_threshold
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
@@ -12,8 +12,43 @@ from lightgbm import LGBMClassifier, early_stopping, log_evaluation
 OUTPUT_DIR = "artifacts/model"
 LABELS_PATH = "train_labels.csv"
 FEATURES_PATH = "artifacts/train_features.parquet"
-RANDOM_SEED = constants.DEFAULT_SEED
+RANDOM_SEED = DEFAULT_SEED
 
+def validate_training_inputs(features:pd.DataFrame, labels:pd.DataFrame) -> None:
+    if CUSTOMER_ID not in features.columns:
+        raise ValueError(f"Features must include {CUSTOMER_ID}.")
+    if CUSTOMER_ID not in labels.columns:
+        raise ValueError(f"Labels must include {CUSTOMER_ID}.")
+    if TARGET not in labels.columns:
+        raise ValueError(f"Labels must include {TARGET}.")
+
+    features_customer_ids = features.loc[:, CUSTOMER_ID]
+    labels_customer_ids = labels.loc[:, CUSTOMER_ID]
+
+    if features_customer_ids.isna().any():
+        raise ValueError(f"(features): {CUSTOMER_ID} cannot be NULL.")
+    if labels_customer_ids.isna().any():
+        raise ValueError(f"(labels): {CUSTOMER_ID} cannot be NULL.")
+    if labels.loc[:, TARGET].isna().any():
+        raise ValueError(f"{TARGET} cannot be NULL.")
+    if features_customer_ids.duplicated().any():
+        raise ValueError(f"The features contain duplicate {CUSTOMER_ID}s")
+    if labels_customer_ids.duplicated().any():
+        raise ValueError(f"The labels contain duplicate {CUSTOMER_ID}s")
+
+    actual_targets = set(labels.loc[:, TARGET].unique())
+    if actual_targets != {0, 1}:
+        raise ValueError(f"Expected binary targets {{0, 1}}, found {actual_targets}")
+
+    features_customer_ids_set = set(features_customer_ids)
+    labels_customer_ids_set = set(labels_customer_ids)
+    missing_customer_ids_from_labels = features_customer_ids_set - labels_customer_ids_set
+    missing_customer_ids_from_features = labels_customer_ids_set - features_customer_ids_set
+
+    if len(missing_customer_ids_from_features) != 0:
+        raise ValueError(f"There are {len(missing_customer_ids_from_features)} {CUSTOMER_ID}s missing from features.")
+    if len(missing_customer_ids_from_labels) != 0:
+        raise ValueError(f"There are {len(missing_customer_ids_from_labels)} {CUSTOMER_ID}s missing from labels.")
 
 def train_model(
         output_dir= OUTPUT_DIR,
@@ -28,20 +63,21 @@ def train_model(
 
     if folds < 2:
         raise ValueError("Number of folds cannot be less than 2")
-
-    if sample_size is None:
-        features = pd.read_parquet(features_path)
-    elif sample_size <= 0:
+    if sample_size is not None and sample_size <= 0:
         raise ValueError("Sample size should be greater than 0")
-    else:
-        features = pd.read_parquet(features_path).sample(n=sample_size, random_state=random_seed)
 
+    features = pd.read_parquet(features_path)
     labels = pd.read_csv(labels_path)
-    labels.set_index('customer_ID', inplace=True)
-    customer_ID = features.pop("customer_ID")
+    validate_training_inputs(features, labels)
+
+    if sample_size is not None:
+        features = features.sample(n=sample_size, random_state=random_seed)
+
+    labels.set_index(CUSTOMER_ID, inplace=True)
+    customer_ID = features.pop(CUSTOMER_ID)
 
     X = features
-    y = labels.loc[customer_ID, 'target']
+    y = labels.loc[customer_ID, TARGET]
 
     skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_seed)
     fold_metrics = []
@@ -139,7 +175,7 @@ def train_one_fold(train_X, train_y, validation_X, validation_y, validation_ids,
     )
 
     callbacks = [
-        early_stopping(stopping_rounds=100, verbose=True),
+        early_stopping(stopping_rounds=100, verbose=True, first_metric_only=True),
         log_evaluation(period=50)
     ]
 
