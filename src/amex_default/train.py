@@ -3,7 +3,7 @@ import numpy as np
 import argparse
 import json
 from pathlib import Path
-from amex_default.constants import CUSTOMER_ID, TARGET, DEFAULT_SEED
+from amex_default.constants import CUSTOMER_ID, TARGET, DEFAULT_SEED, PREPARATION_PIPELINE_VERSION
 from amex_default.metrics import amex_metric, select_f1_threshold
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
@@ -66,7 +66,7 @@ def train_model(
     if sample_size is not None and sample_size <= 0:
         raise ValueError("Sample size should be greater than 0")
 
-    features = pd.read_parquet(features_path)
+    features = pd.read_parquet(features_path, dtype_backend="numpy_nullable")
     labels = pd.read_csv(labels_path)
     validate_training_inputs(features, labels)
 
@@ -142,7 +142,8 @@ def train_model(
         "random_seed": random_seed,
         "threshold": select_threshold["threshold"],
         "model_files": model_names,
-        "lightgbm_params": model.get_params()
+        "lightgbm_params": model.get_params(),
+        "preparation_pipeline_version": PREPARATION_PIPELINE_VERSION
     }
 
     with open(output_path / "manifest.json", "w") as f:
