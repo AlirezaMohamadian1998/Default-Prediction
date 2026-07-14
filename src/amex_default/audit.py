@@ -1,4 +1,5 @@
 from amex_default.database import connect
+from amex_default.constants import CUSTOMER_ID, TARGET
 
 def audit_dataset(train_path: str, labels_path: str|None = None):
     label_counts = None
@@ -17,20 +18,20 @@ def audit_dataset(train_path: str, labels_path: str|None = None):
         sentinel_counts = audit_sentinel_cols(train_path, connection, schema)
 
         statement_count, customer_count = connection.execute(
-            """
-            SELECT COUNT(*) AS statement_count, COUNT(DISTINCT customer_ID) AS customer_count
+            f"""
+            SELECT COUNT(*) AS statement_count, COUNT(DISTINCT {CUSTOMER_ID}) AS customer_count
             FROM read_parquet(?)
             """,
             [train_path]
         ).fetchone()  # type: ignore
 
         min_statements, max_statements, avg_statements = connection.execute(
-            """
+            f"""
             WITH customer_stats AS (
-                SELECT customer_ID,
+                SELECT {CUSTOMER_ID},
                 COUNT(*) AS history_stats
                 FROM read_parquet(?)
-                GROUP BY customer_ID
+                GROUP BY {CUSTOMER_ID}
             )
             SELECT MIN(history_stats) AS min_statements,
             MAX(history_stats) AS max_statements,
@@ -41,25 +42,72 @@ def audit_dataset(train_path: str, labels_path: str|None = None):
         ).fetchone()  # type: ignore
 
         if labels_path is not None:
+            distinct_label_customers, null_customer_ids = connection.execute(
+                f"""
+                SELECT
+                    COUNT(DISTINCT {CUSTOMER_ID}) AS distinct_label_customers,
+                    COUNT(*) FILTER (WHERE {CUSTOMER_ID} IS NULL) AS null_customer_ids
+                FROM read_csv_auto(?, header=true)
+                """,
+                [labels_path]
+            ).fetchone() #type: ignore
+
             label_counts = connection.execute(
-                """
-                SELECT target, 
+                f"""
+                SELECT {TARGET},
                 COUNT(*) AS label_count
                 FROM read_csv_auto(?, header=true)
-                GROUP BY target
-                ORDER BY target
+                GROUP BY {TARGET}
+                ORDER BY {TARGET}
                 """,
                 [labels_path]
             ).fetchall()  # type: ignore
 
             label_count_by_target = dict(label_counts)
             actual_targets = set(label_count_by_target)
+
             if actual_targets != {0, 1}:
-                raise ValueError(
-                    f"Expected binary targets {{0, 1}}, found {actual_targets}"
-                )
+                raise ValueError(f"Expected binary targets {{0, 1}}, found {actual_targets}")
 
             total_labels = sum(label_count_by_target.values())
+
+            if null_customer_ids != 0:
+                raise ValueError("labels contain missing customer IDs")
+            if total_labels != distinct_label_customers:
+                raise ValueError("Some customers have duplicate labels.")
+            if distinct_label_customers != customer_count:
+                raise ValueError("Number of labelled customers does not match the statement customers")
+
+            missing_label_count, extra_label_count = connection.execute(
+                F"""
+                WITH statement_customers AS (
+                    SELECT DISTINCT {CUSTOMER_ID} FROM read_parquet(?)
+                ),
+                label_customers AS (
+                    SELECT DISTINCT {CUSTOMER_ID} FROM read_csv_auto(?, header=true)
+                ),
+                missing_labels AS (
+                    SELECT {CUSTOMER_ID} FROM statement_customers
+                    EXCEPT
+                    SELECT {CUSTOMER_ID} FROM label_customers
+                ),
+                extra_labels AS (
+                    SELECT {CUSTOMER_ID} FROM label_customers
+                    EXCEPT
+                    SELECT {CUSTOMER_ID} FROM statement_customers
+                )
+                SELECT
+                    (SELECT COUNT(*) FROM missing_labels) AS missing_label_count,
+                    (SELECT COUNT(*) FROM extra_labels) AS extra_label_count
+                """,
+                [train_path, labels_path]
+            ).fetchone() #type:ignore
+
+            if missing_label_count != 0:
+                raise ValueError(f"Statement customers are missing labels, {missing_label_count} labels are missing.")
+            if extra_label_count != 0:
+                raise ValueError(f"Labels contain {extra_label_count} unknown customers.")
+
             positive_rate = label_count_by_target[1] / total_labels
     finally:
         connection.close()
